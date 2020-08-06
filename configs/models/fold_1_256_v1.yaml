@@ -1,0 +1,3 @@
+run_id: c941a40a87aa4372babc3f249d59e328
+output: models/fold_1_256_v1
+folder_to_download: model_config

@@ -1,0 +1,3 @@
+run_id: 579504d372bb49998f594617e0603a76
+output: models/fold_3_768_v1
+folder_to_download: model_config

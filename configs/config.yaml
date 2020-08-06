@@ -1,0 +1,189 @@
+pipeline_type: classification_ids_pipeline
+experiment_name: &experiment_name kaggle_melanoma_image_classification
+
+stages:
+#  artifacts_download:
+#    artifacts:
+#      - {artifact_name: efficientnet-b0, tag: efficientnet-b0_v1, out: .cache/torch/checkpoints}
+
+  dataset_download:
+    datasets:
+      - {dataset_name: kaggle_melanoma_image_classification, tag: dafafcb00c0124850547b663a354f6e579661054, out: &out data}
+
+  train_model:
+    task_type: &task_type 'classification'
+    serialization_type: 'trace_serialization'
+
+    dist_params:
+      backend: nccl
+
+    meta:
+      experiment_name: *experiment_name
+      work_dir: &work_dir "./workdir"
+      total_epochs: 20
+      num_classes: &num_classes 1
+      label_mapping: &label_mapping data/label_mapping.json
+      task_subtype: &task_subtype binary
+      expected_sigmoid: &expected_sigmoid !!bool true
+
+    model: &model
+      type: 'ok_tasks.models.classification.ImgClsModel'
+      encoder:
+        type: 'efficientnet_pytorch.EfficientNet.from_pretrained'
+#        type: 'pretrainedmodels.se_resnext50_32x4d'
+        model_name: 'efficientnet-b1'
+        num_classes: &features 256
+#        pretrained: imagenet
+#      activation: "sigmoid"
+      features: *features
+      dropout: 0.5
+      n_classes: *num_classes
+      memory_efficient: !!bool False
+
+    data:
+      train:
+        type: BinaryClsPlatformDataset
+        img_root: &img_root data/jpeg/train
+        file_name: data/splits/train_0.csv
+        label_column: &label_column benign_malignant
+        path_column: &path_column "image_name"
+        label_mapping_path: *label_mapping
+        sep: &sep ","
+        extension: &extension ".jpg"
+        class_weights:
+          benign: 0.2
+          malignant: 0.8
+      val:
+        type: BinaryClsPlatformDataset
+        img_root: *img_root
+        file_name: data/splits/val_0.csv
+        label_column: *label_column
+        path_column: *path_column
+        label_mapping_path: *label_mapping
+        sep: *sep
+        extension: *extension
+
+    target_shape: &target_shape 512
+    transforms:
+      train:
+      - {type: RandomResizedCrop, height: *target_shape, width: *target_shape,
+         scale: !!python/tuple [0.8, 1.0], ratio: !!python/tuple [0.8, 1.2], always_apply: !!bool True}
+      - {type: CoarseDropout, p: 0.1, max_holes: 10, max_height: 16, max_width: 16,
+                                      min_holes: 2, min_height: 4, min_width: 4}
+      - {type: HorizontalFlip, p: 0.5}
+      - {type: VerticalFlip, p: 0.5}
+      - {type: RandomRotate90, p: 0.5}
+      - {type: OneOf, p: 0.25, transforms: [{type: IAAAdditiveGaussianNoise, p: 1.0},
+                                           {type: GaussNoise, p: 1.0}]}
+      - {type: OneOf, p: 0.25, transforms: [{type: MotionBlur, p: 1.0, blur_limit: 3},
+                                           {type: MedianBlur, p: 1.0, blur_limit: 3}]}
+      - {type: OneOf, p: 0.25, transforms:[{type: OpticalDistortion, p: 1.0, border_mode: 0, distort_limit: 0.1, interpolation: 1, shift_limit: 0.1},
+                                           {type: GridDistortion, p: 1.0},
+                                           {type: ElasticTransform, p: 1.0, alpha: 120, sigma: 6.0, alpha_affine: 3.6},
+                                           {type: ShiftScaleRotate, p: 1.0, shift_limit: 0.1, scale_limit: 0.1, rotate_limit: 15}]}
+      - {type: OneOf, p: 0.25, transforms: [{type: CLAHE, p: 1.0, clip_limit: 2},
+                                           {type: RandomBrightnessContrast, p: 1.0}]}
+      - {type: OneOf, p: 0.25, transforms: [{type: RGBShift, p: 1.0},
+                                            {type: ChannelShuffle, p: 1.0}]}
+      - {type: ImageCompression, p: 0.1, quality_lower: 10, quality_upper: 30}
+      - type: Normalize
+      - type: ToTensorV2
+
+      val:
+      - {type: Resize, height: *target_shape, width: *target_shape, always_apply: !!bool True}
+      - type: Normalize
+      - type: ToTensorV2
+
+    dataloader:
+      train:
+        type: "torch.utils.data.DataLoader"
+        batch_size: 64
+        num_workers: 32
+        drop_last: !!bool True
+      val:
+        type: "torch.utils.data.DataLoader"
+        batch_size: 64
+        num_workers: 16
+
+    optimizer:
+      type: "ok_ppln.optim.RAdam"
+#      type: "torch.optim.Adam"
+      lr: 0.0001
+      weight_decay: !!float 1e-5
+
+#    optimizer_wrapper:
+#      type: "ok_ppln.optim.Lookahead"
+#      k: 5
+#      alpha: 0.5
+
+    scheduler:
+      type: 'torch.optim.lr_scheduler.CosineAnnealingLR'
+      T_max: 8
+      eta_min: !!float 1e-6
+
+    loss:
+      type: ok_tasks.losses.classification.FocalLossBinary
+#      type: ok_tasks.losses.classification.focal.SmoothFocalLossBinary
+      logits: !!bool True
+#      type: torch.nn.BCEWithLogitsLoss
+#      type: ok_tasks.losses.classification.SmoothBCEWithLogitsLoss
+#      label_smooth: 0.05
+
+    metrics:
+    - {type: ok_tasks.metrics.classification.AccuracyScore, task_subtype: *task_subtype, expected_sigmoid: *expected_sigmoid}
+
+    global_metrics:
+    - {type: ok_tasks.metrics.classification.AveragePrecisionScore, task_subtype: *task_subtype, expected_sigmoid: *expected_sigmoid}
+    - {type: ok_tasks.metrics.classification.RocAucScore, task_subtype: *task_subtype, expected_sigmoid: *expected_sigmoid}
+
+    hooks:
+    - {type: "ProgressBarLoggerHook", bar_width: 10}
+    - {type: "MlFlowLoggerHook", artifacts: *work_dir}
+    - type: "TextLoggerHook"
+    - {type: "CheckpointHook",
+       num_checkpoints: 3,
+       metric_name: "RocAucScore",
+       mode: "max"}
+    - {type: 'LRSchedulerHook', metric_name: 'loss', by_epoch: !!bool True}
+    - {type: "ApexInitializeHook", opt_level: "O1", loss_scale: "dynamic"}
+    - {type: "ApexOptimizerHook", max_norm: 1.0}
+#    - {type: 'MultiGPUHook'}
+    - {type: 'DistEvalHook', calculate_train: !!bool True}
+    - type: "ModelConfigSerializationHook"
+#    - {type: "ModelFreezeHook", modules: "encoder", unfreeze_epoch: 3}
+    - {type: "ResumeHook", checkpoint: "efficientnet-b1/best.pth",
+       resume_optimizer: !!bool False, resume_scheduler: !!bool False, resume_iter: !!bool False}
+
+  evaluate_model:
+    task_type: *task_type
+
+    model: *model
+    checkpoint: "./workdir/best.pth"
+    report_folder: "./workdir/reports"
+
+    data:
+      test:
+        type: BinaryClsPlatformDataset
+        img_root: *img_root
+        file_name: data/splits/holdout.csv
+        label_column: *label_column
+        path_column: *path_column
+        label_mapping_path: *label_mapping
+        sep: *sep
+        extension: *extension
+
+    transforms:
+      test:
+        - {type: Resize, height: *target_shape, width: *target_shape, always_apply: !!bool True}
+        - type: Normalize
+        - type: ToTensorV2
+
+    dataloader:
+      test:
+        type: "torch.utils.data.DataLoader"
+        batch_size: 64
+        num_workers: 16
+
+  save_release_info:
+    - name: kaggle_melanoma_image_classification_model
+      path: "workdir/trace_serialization"

@@ -1,0 +1,3 @@
+run_id: dd6854ed92a54dbe9b6485d7f61305e4
+output: models/fold_0_512_v1
+folder_to_download: model_config
